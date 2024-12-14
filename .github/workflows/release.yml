@@ -69,12 +69,12 @@ jobs:
             goos: linux
             goarch: amd64
 
-          # Linux MIPS (mipsel_24kc)
-          - name: linux-mipsel
+          # Linux MIPS (ramips/mt7621 - mipsle)
+          - name: linux-mipsle
             goos: linux
-            goarch: mipsle  # Little Endian (phù hợp cho mipsel_24kc)
-            
-      fail-fast: false
+            goarch: mipsle  # Little Endian
+            gomips: softfloat  # Cần thiết cho CPU không hỗ trợ FPU (Floating Point Unit)
+
     runs-on: ubuntu-latest
     env:
       GOOS: ${{ matrix.goos }}
