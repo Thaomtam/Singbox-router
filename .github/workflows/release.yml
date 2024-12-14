@@ -1,16 +1,60 @@
 name: Release Build
-
 permissions: write-all
-
 on:
   push:
     tags:
-      - "v*"           # Kích hoạt khi push tag bắt đầu với "v"
-  workflow_dispatch:    # Cho phép kích hoạt thủ công
-
+      - "v*"
+  workflow_dispatch:  # Thêm dòng này để cho phép kích hoạt thủ công
 jobs:
+  build:
+    name: Debug build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Get latest go version
+        id: version
+        run: |
+          echo go_version=$(curl -s https://raw.githubusercontent.com/actions/go-versions/main/versions-manifest.json | grep -oE '"version": "[0-9]{1}.[0-9]{1,}(.[0-9]{1,})?"' | head -1 | cut -d':' -f2 | sed 's/ //g; s/"//g') >> $GITHUB_OUTPUT
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ steps.version.outputs.go_version }}
+      - name: Add cache to Go proxy
+        run: |
+          version=`git rev-parse HEAD`
+          mkdir build
+          pushd build
+          go mod init build
+          go get -v github.com/sagernet/sing-box@$version
+          popd
+        continue-on-error: true
+      - name: Run Test
+        run: |
+          go test -v ./...
+  build_go118:
+    name: Debug build (Go 1.21)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+      - name: Cache go module
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/go/pkg/mod
+          key: go118-${{ hashFiles('**/go.sum') }}
+      - name: Run Test
+        run: make
   cross:
-    name: Cross-Platform Build
     strategy:
       matrix:
         include:
@@ -18,64 +62,52 @@ jobs:
           - name: android-arm64-v8a
             goos: android
             goarch: arm64
-            android_abi: arm64-v8a  # ABI Android chính xác
+            android_abi: arm64-v8a  # Đảm bảo ABI Android chính xác
 
           # Linux AMD64
           - name: linux-amd64
             goos: linux
             goarch: amd64
 
-          # Linux ARM64
-          - name: linux-arm64
-            goos: linux
-            goarch: arm64
-
           # Linux MIPS (mipsel_24kc)
           - name: linux-mipsel
             goos: linux
             goarch: mipsle  # Little Endian (phù hợp cho mipsel_24kc)
-
-    fail-fast: false
+            
+      fail-fast: false
     runs-on: ubuntu-latest
     env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOAMD64: ${{ matrix.goamd64 }}
+      GOARM: ${{ matrix.goarm }}
+      GOMIPS: ${{ matrix.gomips }}
       CGO_ENABLED: 0
       TAGS: with_clash_api,with_quic,with_grpc,with_wireguard,with_reality_server,with_v2ray_api,with_utls,with_ech,with_gvisor,with_dhcp
-
     steps:
-      # Checkout source code
-      - name: Checkout Source Code
+      - name: Checkout
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-
-      # Lấy phiên bản Go mới nhất
-      - name: Get Latest Go Version
+      - name: Get latest go version
         id: version
         run: |
           echo go_version=$(curl -s https://raw.githubusercontent.com/actions/go-versions/main/versions-manifest.json | grep -oE '"version": "[0-9]{1}.[0-9]{1,}(.[0-9]{1,})?"' | head -1 | cut -d':' -f2 | sed 's/ //g; s/"//g') >> $GITHUB_OUTPUT
-
-      # Thiết lập Go
       - name: Setup Go
         uses: actions/setup-go@v4
         with:
           go-version: ${{ steps.version.outputs.go_version }}
-
-      # Build sing-box
-      - name: Build sing-box
+      - name: Build
         id: build
-        run: |
-          echo "Building for GOARCH=${{ matrix.goarch }} GOOS=${{ matrix.goos }}"
-          go build -tags "${{ env.TAGS }}" -o sing-box-${{ matrix.name }} ./cmd/sing-box
+        run: make
 
-      # Đổi tên và nén file binary
-      - name: Rename and Compress Artifacts
+      - name: Rename and Store Artifacts
         run: |
           ls -R
           artifact_name=sing-box-${{ matrix.name }}.zip
-          7z a $artifact_name sing-box-${{ matrix.name }}
+          7z a $artifact_name sing-box*
           echo "artifact_name=$artifact_name" >> $GITHUB_ENV
 
-      # Upload artifacts
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
@@ -86,16 +118,12 @@ jobs:
     name: Create Release
     needs: cross
     runs-on: ubuntu-latest
-
     steps:
-      # Checkout source code
-      - name: Checkout Source Code
+      - name: Checkout
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-
-      # Đặt biến môi trường cho tên và tag
-      - name: Set Variables
+      - name: Set variables
         run: |
           TZ="Asia/Ho_Chi_Minh"
           RELEASE_NAME=$(TZ=$TZ date '+%d/%m/%Y %H:%M')
@@ -104,13 +132,11 @@ jobs:
           echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
         shell: bash
 
-      # Tạo ghi chú phát hành
-      - name: Create Release Notes
+      - name: Create release notes file
         run: |
           echo -e "👉 Github: thaomtam\n👉 Facebook: thời tiết\n👉 Telegram: t.me/ktandroidreview\n\n😍😍 Sing-Box core" > release-notes.txt
-
-      # Kiểm tra nếu release đã tồn tại
-      - name: Check If Release Exists
+        
+      - name: Check if release exists
         id: check_release
         run: |
           if gh release view ${{ env.TAG_NAME }}; then
@@ -119,15 +145,14 @@ jobs:
             echo "RELEASE_EXISTS=false" >> $GITHUB_ENV
           fi
 
-      # Download artifacts từ bước build
       - name: Download Artifacts
         uses: actions/download-artifact@v3
         with:
           path: ./artifacts/
 
-      # Tạo hoặc cập nhật Release
-      - name: Create or Update Release
+      - name: Create or update release
         run: |
+          # Get all .zip files in the artifacts directory
           files=$(find ./artifacts -name "*.zip")
           if [ "${{ env.RELEASE_EXISTS }}" = "false" ]; then
             gh release create ${{ env.TAG_NAME }} \
@@ -139,6 +164,7 @@ jobs:
           else
             gh release upload ${{ env.TAG_NAME }} \
               $files
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
